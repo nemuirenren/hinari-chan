@@ -50,8 +50,10 @@ from harness structure, never from prompting.
   configured model (tool calling, loop closing, trailer tolerance, dangling-id
   tolerance). Incompatible model → exit 2 with a change-model message before
   Discord is ever touched. No model name is hardcoded anywhere.
-- **No agent frameworks.** No LangChain/LangGraph. Dependencies: `discord.py`
-  + `tiktoken`. LLM over stdlib `urllib`, state in plain files.
+- **No agent frameworks.** No LangChain agents/LangGraph. Transport is
+  LangChain (`ChatOpenAI` against any OpenAI-compatible endpoint) with zero
+  framework behavior — no chains, no agents, no retries. Dependencies:
+  `discord.py` + `tiktoken` + `langchain`/`langchain-openai`. State in files.
 - **Token-measured windows + telemetry.** Both agents slide newest-20-pairs
   windows; every wake logs real token sizes with over-budget warnings.
 

@@ -30,19 +30,8 @@ class PhoneBufferTest(unittest.TestCase):
         self.assertEqual(len(phone.messages), 2)  # dedup by id, ref kept
 
 
-class PayloadShapeTest(unittest.TestCase):
-    def test_only_locked_keys(self):
-        payload = llm.build_payload("m", [{"role": "system", "content": "x"}], llm.TOOLS)
-        self.assertEqual(set(payload), {"model", "messages", "tools", "tool_choice", "temperature"})
-
-    def test_temperature_locked_to_1(self):
-        payload = llm.build_payload("m", [], None)
-        self.assertEqual(payload["temperature"], 1)
-        for forbidden in ("max_tokens", "top_p", "top_k", "frequency_penalty",
-                          "presence_penalty", "reasoning_effort", "thinking"):
-            self.assertNotIn(forbidden, payload)
-
-    def test_six_hinari_tools(self):
+class AdapterShapeTest(unittest.TestCase):
+    def test_six_hinari_tools_unchanged(self):
         names = [t["function"]["name"] for t in llm.TOOLS]
         self.assertEqual(names, ["read_chat", "scroll_chat", "search_chat",
                                  "send_message", "do_activity", "memory"])
@@ -54,41 +43,60 @@ class PayloadShapeTest(unittest.TestCase):
         self.assertNotIn("text", props)
         self.assertEqual(props["bubbles"]["type"], "array")
 
-    def test_trailer_strip(self):
-        self.assertEqual(llm.strip_trailer('{"a":1}data: [DONE]'), '{"a":1}')
-        self.assertEqual(llm.strip_trailer('{"a":1}'), '{"a":1}')
-
-
-class ParseTest(unittest.TestCase):
-    def _body(self, message, finish="tool_calls"):
-        return {"choices": [{"message": message, "finish_reason": finish}]}
-
-    def test_parses_calls_and_ignores_extras(self):
-        body = self._body({
-            "role": "assistant",
-            "content": "checking",
-            "reasoning": "should be ignored",
-            "tool_calls": [{
+    def test_maps_all_five_roles(self):
+        msgs = llm.to_lc_messages([
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "lore", "pinned": True},
+            {"role": "assistant", "content": None, "tool_calls": [{
                 "id": "c1", "type": "function",
-                "function": {"name": "read_chat", "arguments": "{}"},
-            }],
-        })
-        msg, finish = llm.parse_message(body)
+                "function": {"name": "read_chat", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "{}"},
+            {"role": "user", "content": "yo"},
+        ])
+        kinds = [type(m).__name__ for m in msgs]
+        self.assertEqual(kinds, ["SystemMessage", "AIMessage", "AIMessage",
+                                 "ToolMessage", "HumanMessage"])
+        self.assertEqual(msgs[2].tool_calls[0]["name"], "read_chat")
+        self.assertEqual(msgs[3].tool_call_id, "c1")
+
+    def test_unknown_role_raises(self):
+        with self.assertRaises(llm.LLMError):
+            llm.to_lc_messages([{"role": "carrier-pigeon", "content": "x"}])
+
+    def test_bad_history_args_raise(self):
+        with self.assertRaises(llm.LLMError):
+            llm.to_lc_messages([{"role": "assistant", "content": None, "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "read_chat", "arguments": "{bad"}}]}])
+
+    def test_ms_conversion(self):
+        self.assertEqual(llm._ms(240), 240_000)
+        self.assertEqual(llm._ms(1), 1000)
+
+
+class ParseResponseTest(unittest.TestCase):
+    def _resp(self, content=None, tool_calls=None, finish=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(content=content, tool_calls=tool_calls or [],
+                               response_metadata={"finish_reason": finish} if finish else {})
+
+    def test_parses_calls_and_finish(self):
+        msg, finish = llm._parse_response(self._resp(
+            None, [{"id": "c1", "name": "read_chat", "args": {}}], "tool_calls"))
         self.assertEqual(finish, "tool_calls")
         self.assertEqual(msg["tool_calls"][0], {"id": "c1", "name": "read_chat", "args": {}})
 
-    def test_bad_args_json_raises(self):
-        body = self._body({
-            "role": "assistant", "content": None,
-            "tool_calls": [{"id": "c1", "type": "function",
-                            "function": {"name": "read_chat", "arguments": "{bad"}}],
-        })
-        with self.assertRaises(llm.LLMError):
-            llm.parse_message(body)
+    def test_finish_falls_back_to_shape(self):
+        _, finish = llm._parse_response(self._resp("hi", [], None))
+        self.assertEqual(finish, "stop")
+        _, finish = llm._parse_response(self._resp(
+            None, [{"id": "c", "name": "n", "args": {}}], None))
+        self.assertEqual(finish, "tool_calls")
 
-    def test_missing_choices_raises(self):
-        with self.assertRaises(llm.LLMError):
-            llm.parse_message({"nope": True})
+    def test_non_string_content_coerced(self):
+        msg, _ = llm._parse_response(self._resp(["part"], [], "stop"))
+        self.assertIsInstance(msg["content"], str)
 
     def test_tool_result_must_be_string(self):
         payload = {"tool_call_id": "c1", "content": json.dumps({"a": 1})}
@@ -180,23 +188,47 @@ class GuardTest(unittest.TestCase):
 
 
 class FallbackTest(unittest.TestCase):
+    def _fake_invoke(self, seen, script):
+        def fake(base_url, api_key, model, lc_messages, tools, tool_choice,
+                 temperature, timeout_s):
+            seen.append(tool_choice)
+            item = script[min(len(seen) - 1, len(script) - 1)]
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        return fake
+
     def test_auto_falls_back_to_required(self):
         seen = []
-
-        def fake_post(base_url, api_key, payload, timeout=60):
-            seen.append(payload["tool_choice"])
-            if len(seen) == 1:
-                raise llm.LLMError("boom")
-            return {"choices": [{"message": {"role": "assistant", "content": "hi"},
-                                 "finish_reason": "stop"}]}
-
-        with mock.patch.object(llm, "post", fake_post):
+        script = [llm.LLMError("boom"),
+                  ({"role": "assistant", "content": "hi", "tool_calls": []}, "stop")]
+        with mock.patch.object(llm, "_invoke_once", self._fake_invoke(seen, script)):
             _, finish = llm.call_llm("u", "k", "m", [{"role": "system", "content": "x"}])
         self.assertEqual(seen, ["auto", "required"])
         self.assertEqual(finish, "stop")
 
-    def test_default_payload_is_auto(self):
-        self.assertEqual(llm.build_payload("m", [])["tool_choice"], "auto")
+    def test_temperature_asserted(self):
+        with self.assertRaises(AssertionError):
+            llm.call_llm("u", "k", "m", [], temperature=0.7)
+
+    def test_model_built_with_ms_timeout_and_no_extras(self):
+        captured = {}
+
+        def fake_init(*a, **k):
+            captured.update(k)
+            raise llm.LLMError("stop-here")
+
+        with mock.patch("langchain.chat_models.init_chat_model", fake_init):
+            try:
+                llm._build_model("http://x/v1/", "k", "m", 1, 240)
+            except llm.LLMError:
+                pass
+        self.assertEqual(captured["timeout"], 240_000)
+        self.assertEqual(captured["temperature"], 1)
+        self.assertEqual(captured["max_retries"], 0)
+        for forbidden in ("max_tokens", "top_p", "reasoning"):
+            self.assertNotIn(forbidden, captured)
 
     def test_default_timeouts_240(self):
         import inspect

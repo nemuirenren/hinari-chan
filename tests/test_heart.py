@@ -30,6 +30,21 @@ def body_text(content="oops"):
     }]}
 
 
+def _as_tuple(body):
+    """Convert a raw provider body to the (msg, finish) adapter shape."""
+    import json as _json
+
+    raw = body["choices"][0]
+    raw_msg = raw.get("message", {})
+    calls = []
+    for c in raw_msg.get("tool_calls") or []:
+        fn = c["function"]
+        calls.append({"id": c.get("id", ""), "name": fn.get("name", ""),
+                      "args": _json.loads(fn.get("arguments") or "{}")})
+    return ({"role": "assistant", "content": raw_msg.get("content"),
+             "tool_calls": calls}, raw.get("finish_reason", "stop"))
+
+
 class ContractTest(unittest.TestCase):
     def test_tool_name_and_temperature(self):
         self.assertEqual(heart.HEART_TOOL["function"]["name"], "update_feelings")
@@ -104,7 +119,7 @@ class JudgeFlowTest(unittest.TestCase):
             item = script[min(calls["n"] - 1, len(script) - 1)]
             if isinstance(item, Exception):
                 raise item
-            return llm.parse_message(item)  # real parse, faked transport
+            return _as_tuple(item)  # raw body in, adapter tuple out
 
         with mock.patch.object(heart.llm, "call_llm", fake):
             out = heart.judge("u", "k", "m", "SYS", "ID", [], "BATCH", "SNAP")
