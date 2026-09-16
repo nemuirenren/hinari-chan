@@ -1,0 +1,12 @@
+# Mood mapping: score -> file (owner-editable)
+10: ecstatic.md
+9: elated.md
+8: cheerful.md
+7: pleasant.md
+6: calm.md
+5: flat.md
+4: low.md
+3: gloomy.md
+2: distressed.md
+1: miserable.md
+0: devastated.md

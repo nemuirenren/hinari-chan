@@ -1,0 +1,18 @@
+{
+  "multipliers": {
+    "idle": 0.0,
+    "rest": 0.3,
+    "class": 1.0,
+    "work": 1.4,
+    "outing": 1.2,
+    "sleep": 0.0
+  },
+  "pleasantness": {
+    "idle": 0.0,
+    "rest": 1.0,
+    "class": -0.5,
+    "work": -1.0,
+    "outing": 1.5,
+    "sleep": 0.5
+  }
+}

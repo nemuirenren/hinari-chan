@@ -1,0 +1,14 @@
+# Relationship mapping: range -> file (owner-editable)
+"-500--400": profound-hatred.md
+"-400--320": hostility.md
+"-320--240": resentment.md
+"-240--160": distrust.md
+"-160--80": discomfort.md
+"-80--20": aloofness.md
+"-20-20": neutral.md
+"20-80": acquaintance.md
+"80-160": cordiality.md
+"160-240": warmth.md
+"240-320": trust.md
+"320-400": deep-affection.md
+"400-500": devotion.md

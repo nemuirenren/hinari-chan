@@ -1,0 +1,16 @@
+[project]
+name = "hinari"
+version = "0.1.0"
+description = "Hinari - single human-like Discord member"
+requires-python = ">=3.11"
+dependencies = [
+    "discord-py>=2.7.1",
+    "tiktoken>=0.14.0",
+]
+
+[project.scripts]
+hinari = "hinari.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
