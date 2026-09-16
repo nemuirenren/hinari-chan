@@ -35,32 +35,41 @@ class CompatError(Exception):
         super().__init__(f"[{probe}] {reason}")
 
 
-def _check_payload_shape() -> None:
-    """Local probe: our own builder must stay owner-locked (no extra params)."""
-    payload = llm.build_payload("probe-model", [{"role": "system", "content": "hi"}], [PROBE_TOOL])
-    extra = set(payload) - llm.ALLOWED_PAYLOAD_KEYS
-    if extra:
-        raise CompatError("payload-shape", f"forbidden keys: {sorted(extra)}")
-    if payload.get("temperature") != 1:
-        raise CompatError("payload-shape", "temperature must be 1")
-    if llm.strip_trailer('{"a":1}data: [DONE]') != '{"a":1}':
-        raise CompatError("payload-shape", "trailer strip broken")
+def _check_adapter_shape() -> None:
+    """Local probe: mapping covers every role and locks stay locked."""
+    sample = [
+        {"role": "system", "content": "hi"},
+        {"role": "assistant", "content": "lore"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "get_weather", "arguments": '{"city": "x"}'}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "{}"},
+        {"role": "user", "content": "yo"},
+    ]
+    lc = llm.to_lc_messages(sample)  # raises LLMError on regression
+    if len(lc) != 5:
+        raise CompatError("adapter-shape", "role mapping incomplete")
+    if config.TEMPERATURE != 1 or config.HEART_TEMPERATURE != 0.4:
+        raise CompatError("adapter-shape", "temperature lock broken")
+    names = [t["function"]["name"] for t in llm.TOOLS]
+    if len(names) != 6:
+        raise CompatError("adapter-shape", "tool set changed")
 
 
 def check_compatible(base_url: str, api_key: str, model: str,
                        tool_choice: str = "auto", timeout: int = config.COMPAT_TIMEOUT) -> None:
     """Run basic-call + closed-loop probes against the configured endpoint."""
-    _check_payload_shape()
+    _check_adapter_shape()
 
     # Probe 1: the model must actually call a tool with valid JSON args.
     probe_messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What is the weather in Tokyo? Use the tool."},
     ]
-    payload = llm.build_payload(model, probe_messages, [PROBE_TOOL], tool_choice)
     try:
-        body = llm.post(base_url, api_key, payload, timeout)
-        message, finish = llm.parse_message(body)
+        message, finish = llm.call_llm(base_url, api_key, model, probe_messages,
+                                        tool_choice, timeout,
+                                        tools=[PROBE_TOOL], temperature=1)
     except llm.LLMError as exc:
         raise CompatError("basic-call", f"request failed: {exc}") from exc
     if finish != "tool_calls" or not message["tool_calls"]:
@@ -93,10 +102,10 @@ def check_compatible(base_url: str, api_key: str, model: str,
         {"role": "tool", "tool_call_id": call_id, "content": tool_text},
         {"role": "user", "content": "Answer with the weather in one short sentence."},
     ]
-    payload = llm.build_payload(model, follow_up, [PROBE_TOOL], tool_choice)
     try:
-        body = llm.post(base_url, api_key, payload, timeout)
-        message, finish = llm.parse_message(body)
+        message, finish = llm.call_llm(base_url, api_key, model, follow_up,
+                                        tool_choice, timeout,
+                                        tools=[PROBE_TOOL], temperature=1)
     except llm.LLMError as exc:
         raise CompatError("closed-loop", f"request failed: {exc}") from exc
     if finish != "stop":
@@ -115,8 +124,7 @@ def check_compatible(base_url: str, api_key: str, model: str,
         {"role": "user", "content": "Noted. Reply with OK."},
     ]
     try:
-        body = llm.post(base_url, api_key,
-                         {"model": model, "messages": dangling, "temperature": 1}, timeout)
-        llm.parse_message(body)
+        llm.call_llm(base_url, api_key, model, dangling, tool_choice, timeout,
+                      tools=None, temperature=1)
     except llm.LLMError as exc:
         raise CompatError("dangling-tool", f"request failed: {exc}") from exc
