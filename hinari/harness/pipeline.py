@@ -81,7 +81,23 @@ def normalize(assistant_msg: dict) -> dict:
     A message without tool_calls is a miss (handled by handle_miss) and is
     never appended, with or without content.
     """
-    return {"role": "assistant", "content": None, "tool_calls": assistant_msg.get("tool_calls", [])}
+    return {"role": "assistant", "content": None, "tool_calls": assistant_msg.get("tool_calls", []),
+            "raw_content": assistant_msg.get("raw_content", assistant_msg.get("content"))}
+
+
+def miss_preview(raw_msg: dict, limit: int = config.MISS_PREVIEW) -> str:
+    """Render a bounded preview of a missed message for INFO logs.
+
+    Note: free model text, so it passes through the redact filter like any
+    other log line. Kept in pipeline (pure) so it stays unit-testable.
+    """
+    content = raw_msg.get("raw_content")
+    if content is None:
+        return "<empty>"
+    text = str(content)
+    if len(text) > limit:
+        return text[:limit] + f"...[+{len(text) - limit} chars]"
+    return text if text else "<empty>"
 
 
 def handle_miss(s: State) -> str:
