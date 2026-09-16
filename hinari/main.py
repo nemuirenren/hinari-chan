@@ -223,15 +223,18 @@ class Bot:
         for _ in range(config.TOOL_LOOP_MAX):
             messages = [sys_msg, lore_msg, *s.history]
             try:
-                msg, _ = await asyncio.to_thread(
+                msg, finish = await asyncio.to_thread(
                     llm.call_llm,
                     self.cfg.llm_base_url, self.cfg.llm_api_key, self.cfg.llm_model, messages,
+                    self.cfg.tool_choice,
                 )
             except llm.LLMError as exc:
                 log.warning("CALL_LLM failed: %s", exc)
-                msg = {"content": None, "tool_calls": []}
-            msg = pipeline.normalize(msg)
+                msg, finish = {"content": None, "tool_calls": []}, "error"
+            msg = pipeline.normalize({**msg, "raw_content": msg.get("content")})
             if not msg["tool_calls"]:
+                log.info("miss #%d finish=%s preview=%s",
+                         s.misses + 1, finish, pipeline.miss_preview(msg.get("content")))
                 if pipeline.handle_miss(s) == "retry-once":
                     continue
                 log.info("miss x%d, idle sleep %dmin", config.MISS_MAX, config.MISS_SLEEP_MIN)

@@ -24,6 +24,7 @@ CURFEW_START = 1  # curfew window start hour (inclusive, local time)
 CURFEW_END = 5  # curfew window end hour (exclusive); 05:00+ is normal rules
 MISS_SLEEP_MIN = 7  # idle sleep after exhausting misses (Patch-010)
 MISS_MAX = 1  # consecutive misses before idle sleep (Patch-010)
+MISS_PREVIEW = 300  # logged content preview chars per miss (Patch-016)
 TOOL_LOOP_MAX = 12  # max tool iterations per wake
 # ponytail: single wake ceiling against a runaway loop; raise only if observed.
 TEMPERATURE = 1  # the only LLM sampling parameter ever sent for Hinari

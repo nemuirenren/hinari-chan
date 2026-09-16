@@ -104,6 +104,22 @@ class NormalizeMissTest(unittest.TestCase):
     def test_empty_calls_is_miss_shape(self):
         msg = pipeline.normalize({"content": "hello", "tool_calls": []})
         self.assertEqual(msg["tool_calls"], [])
+        self.assertEqual(msg["raw_content"], "hello")
+
+
+class MissPreviewTest(unittest.TestCase):
+    def test_empty(self):
+        self.assertEqual(pipeline.miss_preview({"raw_content": None}), "<empty>")
+        self.assertEqual(pipeline.miss_preview({"raw_content": ""}), "<empty>")
+
+    def test_short_passthrough(self):
+        self.assertEqual(pipeline.miss_preview({"raw_content": "hi"}), "hi")
+
+    def test_truncated_with_remainder(self):
+        text = "x" * (config.MISS_PREVIEW + 50)
+        out = pipeline.miss_preview({"raw_content": text})
+        self.assertTrue(out.endswith("[+50 chars]"))
+        self.assertEqual(len(out), config.MISS_PREVIEW + len("...[+50 chars]"))
 
     def test_retry_up_to_max_then_sleep(self):
         s = make_state()
