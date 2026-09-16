@@ -1,6 +1,5 @@
 """Startup compatibility-check tests. All provider I/O is faked. No network."""
 
-import json
 import unittest
 from unittest import mock
 
@@ -8,57 +7,52 @@ from hinari import compat
 from hinari.adapters import llm
 
 
-def canned_post_factory(first_body, second_body):
-    calls = {"n": 0}
+def tool_msg(call_id="call_1", args=None, name="get_weather"):
+    return ({"role": "assistant", "content": None,
+             "tool_calls": [{"id": call_id, "name": name,
+                             "args": args or {"city": "Tokyo"}}]},
+            "tool_calls")
 
-    def fake_post(base_url, api_key, payload, timeout=60):
+
+def stop_msg(text="It is sunny and 28C in Tokyo."):
+    return ({"role": "assistant", "content": text, "tool_calls": []}, "stop")
+
+
+def canned_call_factory(*items):
+    calls = {"n": 0, "seen": []}
+
+    def fake(base_url, api_key, model, messages, tool_choice="auto",
+             timeout=240, tools=None, temperature=1):
         calls["n"] += 1
-        assert payload["temperature"] == 1  # owner lock holds even in probes
-        return first_body if calls["n"] == 1 else second_body
+        calls["seen"].append((tool_choice, temperature, bool(tools)))
+        assert temperature == 1  # owner lock holds even in probes
+        return items[min(calls["n"] - 1, len(items) - 1)]
 
-    return fake_post
-
-
-def tool_body(call_id="call_1", args=None):
-    return {"choices": [{
-        "message": {
-            "role": "assistant", "content": None,
-            "tool_calls": [{
-                "id": call_id, "type": "function",
-                "function": {"name": "get_weather",
-                             "arguments": json.dumps(args or {"city": "Tokyo"})},
-            }],
-        },
-        "finish_reason": "tool_calls",
-    }]}
-
-
-def stop_body(text="It is sunny and 28C in Tokyo."):
-    return {"choices": [{
-        "message": {"role": "assistant", "content": text},
-        "finish_reason": "stop",
-    }]}
+    fake.calls = calls
+    return fake
 
 
 class CompatTest(unittest.TestCase):
     def test_local_shape_probe_passes(self):
-        compat._check_payload_shape()  # must not raise
+        compat._check_adapter_shape()  # must not raise
 
     def test_happy_path(self):
-        fake = canned_post_factory(tool_body(), stop_body())
-        with mock.patch.object(compat.llm, "post", fake):
+        fake = canned_call_factory(tool_msg(), stop_msg(), ({"role": "assistant",
+                                                             "content": "OK",
+                                                             "tool_calls": []}, "stop"))
+        with mock.patch.object(compat.llm, "call_llm", fake):
             compat.check_compatible("http://x", "k", "any-model")
 
     def test_no_tool_calls_fails_basic_probe(self):
-        fake = canned_post_factory(stop_body("hi"), stop_body())
-        with mock.patch.object(compat.llm, "post", fake):
+        fake = canned_call_factory(stop_msg("hi"), stop_msg())
+        with mock.patch.object(compat.llm, "call_llm", fake):
             with self.assertRaises(compat.CompatError) as ctx:
                 compat.check_compatible("http://x", "k", "any-model")
         self.assertEqual(ctx.exception.probe, "basic-call")
 
     def test_empty_final_content_fails_closed_loop(self):
-        fake = canned_post_factory(tool_body(), stop_body("   "))
-        with mock.patch.object(compat.llm, "post", fake):
+        fake = canned_call_factory(tool_msg(), stop_msg("   "))
+        with mock.patch.object(compat.llm, "call_llm", fake):
             with self.assertRaises(compat.CompatError) as ctx:
                 compat.check_compatible("http://x", "k", "any-model")
         self.assertEqual(ctx.exception.probe, "closed-loop")
@@ -67,33 +61,28 @@ class CompatTest(unittest.TestCase):
         def boom(*a, **k):
             raise llm.LLMError("down")
 
-        with mock.patch.object(compat.llm, "post", boom):
+        with mock.patch.object(compat.llm, "call_llm", boom):
             with self.assertRaises(compat.CompatError):
                 compat.check_compatible("http://x", "k", "any-model")
 
     def test_configured_tool_choice_reaches_probes(self):
-        seen = []
-
-        def fake(base_url, api_key, payload, timeout=60):
-            seen.append(payload.get("tool_choice"))
-            n = len(seen)
-            return tool_body() if n == 1 else stop_body()
-
-        with mock.patch.object(compat.llm, "post", fake):
+        fake = canned_call_factory(tool_msg(), stop_msg(), stop_msg("OK"))
+        with mock.patch.object(compat.llm, "call_llm", fake):
             compat.check_compatible("http://x", "k", "any-model", tool_choice="required")
-        self.assertEqual(seen[0], "required")
-        self.assertEqual(seen[1], "required")
+        self.assertEqual([s[0] for s in fake.calls["seen"][:2]], ["required", "required"])
 
     def test_dangling_probe_failure_reports_probe(self):
-        seq = {"n": 0}
+        calls = {"n": 0}
 
-        def fake(base_url, api_key, payload, timeout=60):
-            seq["n"] += 1
-            if seq["n"] < 3:
-                return tool_body() if seq["n"] == 1 else stop_body()
+        def fake(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return tool_msg()
+            if calls["n"] == 2:
+                return stop_msg()
             raise llm.LLMError("strict 400")
 
-        with mock.patch.object(compat.llm, "post", fake):
+        with mock.patch.object(compat.llm, "call_llm", fake):
             with self.assertRaises(compat.CompatError) as ctx:
                 compat.check_compatible("http://x", "k", "any-model")
         self.assertEqual(ctx.exception.probe, "dangling-tool")
